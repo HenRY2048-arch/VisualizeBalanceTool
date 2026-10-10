@@ -1,0 +1,60 @@
+---
+# 在 GitHub 的 Windows runner 上打包 exe 和安装包，省掉本地搭环境。
+# 不需要的话直接删掉这个文件即可。
+name: Build Windows package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Smoke test
+        run: python scripts/smoke_test.py
+
+      - name: Build exe (PyInstaller)
+        run: python scripts/build.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Warning "ISCC.exe not found, skipping installer"
+            exit 0
+          }
+          & $iscc scripts\build.iss
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisualizeBalance-windows
+          path: |
+            dist/VisualizeBalance.exe
+            scripts/Output/VisualizeBalance-Setup.exe
+          if-no-files-found: warn
