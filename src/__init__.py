@@ -1,2 +1,2 @@
 """VisualizeBalance - DeepSeek API 余额监控 & 任务完成通知"""
-__version__ = "1.1.0"
+__version__ = "1.4.1"

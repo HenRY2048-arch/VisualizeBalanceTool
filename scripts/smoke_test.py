@@ -73,6 +73,15 @@ def _install_stubs() -> None:
             def resize(self, *a, **k):
                 return self
 
+            def putalpha(self, *a, **k):
+                return None
+
+            def point(self, *a, **k):
+                return self
+
+            def alpha_composite(self, *a, **k):
+                return None
+
         class _FakeDraw:
             def rounded_rectangle(self, *a, **k):
                 return None
@@ -138,12 +147,40 @@ def _install_stubs() -> None:
         tk = types.ModuleType("tkinter")
         ttk = types.ModuleType("tkinter.ttk")
         messagebox = types.ModuleType("tkinter.messagebox")
+        colorchooser = types.ModuleType("tkinter.colorchooser")
+        colorchooser.askcolor = lambda *a, **k: ((255, 255, 255), "#ffffff")
+
+        class _FakeWidget:
+            def __init__(self, *a, **k):
+                pass
+
+            def pack(self, *a, **k):
+                pass
+
+            def grid(self, *a, **k):
+                pass
+
+            def configure(self, *a, **k):
+                pass
+
+            def destroy(self, *a, **k):
+                pass
+
+        for _name in ("Frame", "Label", "Button", "Entry", "Combobox",
+                      "Checkbutton", "Radiobutton", "Scrollbar", "Notebook",
+                      "Separator", "Treeview", "LabelFrame"):
+            setattr(ttk, _name, _FakeWidget)
+        for _name in ("Canvas", "Button", "StringVar", "BooleanVar", "Tk"):
+            setattr(tk, _name, _FakeWidget)
+
         tk.ttk = ttk
         tk.messagebox = messagebox
+        tk.colorchooser = colorchooser
         sys.modules.update({
             "tkinter": tk,
             "tkinter.ttk": ttk,
             "tkinter.messagebox": messagebox,
+            "tkinter.colorchooser": colorchooser,
         })
 
 
@@ -153,72 +190,174 @@ def _install_stubs() -> None:
 
 def test_badge_spec() -> None:
     from src.icons import (
-        BADGE_GREEN,
-        BADGE_GREEN_AT_DEFAULT,
-        BADGE_ORANGE,
-        BADGE_RED,
-        BADGE_RED_BELOW_DEFAULT,
-        BADGE_WHITE,
+        BADGE_BANDS_DEFAULT,
+        BADGE_DISPLAY_MODE_DEFAULT,
+        BADGE_HUNDREDS_BANDS_DEFAULT,
+        BADGE_INTEGER_COLOR_DEFAULT,
+        BADGE_WATER_UNIT_DEFAULT,
         balance_badge_spec,
+        hex_to_rgb,
     )
 
-    section("Test 1: 余额徽标配色规则")
+    section("Test 1: 余额徽标（文字 / 颜色 / 水位）")
+
+    RED = (255, 0, 0)
+    ORANGE = (255, 165, 0)
+    GREEN = (124, 252, 0)
+    WHITE = (255, 255, 255)
+
+    # 默认色带与旧版三段一致：0 红 / 0.25 橙 / 0.50 绿
     cases = [
-        (20.00, "20", BADGE_WHITE, "整数余额 20.00 -> 白"),
-        (0.00, "0", BADGE_WHITE, "0.00 -> 白"),
-        (20.08, "20", BADGE_RED, "零头 0.08 < 0.25 -> 红"),
-        (20.25, "20", BADGE_ORANGE, "零头 = 0.25（红色阈值边界）-> 橙"),
-        (20.43, "20", BADGE_ORANGE, "零头 0.43 -> 橙"),
-        (20.50, "20", BADGE_GREEN, "零头 = 0.50（绿色阈值边界）-> 绿"),
-        (20.56, "20", BADGE_GREEN, "零头 0.56 >= 0.50 -> 绿"),
-        (99.99, "99", BADGE_GREEN, "99.99 -> 两位数 99"),
-        (8.96, "8", BADGE_GREEN, "一位数余额"),
-        (123.45, "99", BADGE_ORANGE, ">99 封顶为 99"),
-        (None, "--", BADGE_WHITE, "无余额 -> --"),
+        (20.00, "20", WHITE, 1.00, "整数 20.00 -> 白 + 满水"),
+        (0.00, "0", WHITE, 1.00, "0.00 -> 白 + 满水"),
+        (10.20, "10", RED, 0.20, "10.20 -> 10-11 格内 20%"),
+        (9.80, "9", GREEN, 0.80, "9.80 -> 9-10 格内 80%"),
+        (9.00, "9", WHITE, 1.00, "9.00 -> 格线，满"),
+        (20.08, "20", RED, 0.08, "零头 0.08 < 0.25 -> 红"),
+        (20.25, "20", ORANGE, 0.25, "零头 = 0.25 -> 橙"),
+        (20.43, "20", ORANGE, 0.43, "零头 0.43 -> 橙"),
+        (20.50, "20", GREEN, 0.50, "零头 = 0.50 -> 绿"),
+        (20.56, "20", GREEN, 0.56, "零头 0.56 -> 绿"),
+        (99.99, "99", GREEN, 0.99, "99.99 -> 格内 99%"),
+        (8.96, "8", GREEN, 0.96, "一位数余额"),
+        (None, "--", WHITE, 0.00, "无余额 -> --"),
+        (100.00, "1H", RED, 1.00, "100 -> 1H，<320 红，整数满水"),
+        (319.99, "3H", RED, 0.99, "319.99 -> 红"),
+        (320.00, "3H", ORANGE, 1.00, "320（红阈值边界）-> 橙"),
+        (359.99, "3H", ORANGE, 0.99, "359.99 -> 橙"),
+        (360.00, "3H", GREEN, 1.00, "360（绿阈值边界）-> 绿"),
+        (379.00, "3H", GREEN, 1.00, "379 -> 3H，整数满水"),
+        (999.00, "9H", GREEN, 1.00, "999 -> 9H"),
+        (1234.00, "9H", GREEN, 1.00, "超过 999 封顶 9H"),
     ]
-    for value, text, color, label in cases:
-        got_text, got_color = balance_badge_spec(value)
+    for value, text, color, level, label in cases:
+        got_text, got_color, got_level = balance_badge_spec(value)
+        ok = (
+            got_text == text
+            and got_color == color
+            and abs(got_level - level) < 0.001
+        )
         check(
             f"{label}（{value}）",
-            got_text == text and got_color == color,
-            f"期望 ({text}, {color}) 实际 ({got_text}, {got_color})",
+            ok,
+            f"期望 ({text}, {color}, {level}) 实际 ({got_text}, {got_color}, {got_level})",
         )
 
-    # 自定义阈值：绿 0.30 / 红 0.10
+    # 自定义水位格单位
+    unit_cases = [
+        (379.00, 10, 0.90, "单位 10：379 -> 格内 90%"),
+        (375.50, 10, 0.55, "单位 10：375.50 -> 格内 55%"),
+        (370.00, 10, 1.00, "单位 10：370 -> 格线，满"),
+        (379.00, 100, 0.79, "单位 100：379 -> 格内 79%"),
+        (350.00, 100, 0.50, "单位 100：350 -> 格内 50%"),
+        (300.00, 100, 1.00, "单位 100：300 -> 格线，满"),
+        (12.50, 5, 0.50, "单位 5：12.50 -> 格内 50%"),
+    ]
+    for value, unit, level, label in unit_cases:
+        _, _, got_level = balance_badge_spec(value, water_unit=unit)
+        check(label, abs(got_level - level) < 0.001, f"期望 {level} 实际 {got_level}")
+
+    # 十位级自定义 5 段
     custom = [
-        (20.05, BADGE_RED, "自定义阈值：零头 0.05 < 0.10 -> 红"),
-        (20.15, BADGE_ORANGE, "自定义阈值：0.10 <= 零头 0.15 < 0.30 -> 橙"),
-        (20.30, BADGE_GREEN, "自定义阈值：零头 0.30 >= 0.30 -> 绿"),
-        (20.00, BADGE_WHITE, "自定义阈值下整数仍是白"),
+        (20.10, "#FF0000", "自定义 5 段：0.10 -> 第 1 段"),
+        (20.30, "#FF8000", "自定义 5 段：0.30 -> 第 2 段"),
+        (20.50, "#FFFF00", "自定义 5 段：0.50 -> 第 3 段"),
+        (20.70, "#00FF00", "自定义 5 段：0.70 -> 第 4 段"),
+        (20.90, "#00FFFF", "自定义 5 段：0.90 -> 第 5 段"),
+    ]
+    custom_bands = [
+        {"at": 0.0, "color": "#FF0000"},
+        {"at": 0.2, "color": "#FF8000"},
+        {"at": 0.4, "color": "#FFFF00"},
+        {"at": 0.6, "color": "#00FF00"},
+        {"at": 0.8, "color": "#00FFFF"},
     ]
     for value, color, label in custom:
-        _, got_color = balance_badge_spec(value, green_at=0.30, red_below=0.10)
-        check(label, got_color == color, f"期望 {color} 实际 {got_color}")
+        _, got_color, _ = balance_badge_spec(value, bands=custom_bands)
+        check(label, got_color == hex_to_rgb(color), f"期望 {color} 实际 {got_color}")
 
-    # 配置默认值必须与 icons 里的默认阈值一致，避免两处漂移
+    # 百元级自定义 4 段（5 元粒度示例）
+    hundred_bands = [
+        {"at": 0.0, "color": "#FF0000"},
+        {"at": 340.0, "color": "#FFA500"},
+        {"at": 360.0, "color": "#FFFF00"},
+        {"at": 380.0, "color": "#7CFC00"},
+    ]
+    for value, color, label in [
+        (339.99, "#FF0000", "百元级 4 段：339.99 -> 第 1 段"),
+        (350.00, "#FFA500", "百元级 4 段：350 -> 第 2 段"),
+        (370.00, "#FFFF00", "百元级 4 段：370 -> 第 3 段"),
+        (380.00, "#7CFC00", "百元级 4 段：380 -> 第 4 段"),
+    ]:
+        _, got_color, _ = balance_badge_spec(value, hundreds_bands=hundred_bands)
+        check(label, got_color == hex_to_rgb(color), f"期望 {color} 实际 {got_color}")
+
+    # 整数颜色可自定义
+    _, got_color, _ = balance_badge_spec(20.00, integer_color="#00FFAA")
+    check("整数余额颜色可自定义", got_color == (0, 255, 170), str(got_color))
+
+    # 配置默认值必须与 icons 里的默认值一致
     from src import config as config_mod
 
     cfg = config_mod.Config()
     check(
-        "config 默认阈值与 icons 默认值一致",
-        cfg.get("badge_green_at") == BADGE_GREEN_AT_DEFAULT
-        and cfg.get("badge_red_below") == BADGE_RED_BELOW_DEFAULT,
-        f"config=({cfg.get('badge_green_at')}, {cfg.get('badge_red_below')}) "
-        f"icons=({BADGE_GREEN_AT_DEFAULT}, {BADGE_RED_BELOW_DEFAULT})",
+        "config 默认值与 icons 默认值一致",
+        cfg.get("badge_bands") == BADGE_BANDS_DEFAULT
+        and cfg.get("badge_hundreds_bands") == BADGE_HUNDREDS_BANDS_DEFAULT
+        and cfg.get("badge_integer_color") == BADGE_INTEGER_COLOR_DEFAULT
+        and cfg.get("badge_water_unit") == BADGE_WATER_UNIT_DEFAULT
+        and cfg.get("badge_display_mode") == BADGE_DISPLAY_MODE_DEFAULT,
+        f"mode={cfg.get('badge_display_mode')} unit={cfg.get('badge_water_unit')}",
     )
 
     # 手工写坏 config.json 时，兜底必须回到默认值
     config_mod.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     config_mod.CONFIG_PATH.write_text(
-        '{"badge_green_at": 0.2, "badge_red_below": 0.8}', encoding="utf-8"
+        '{"badge_bands": [{"at": 0, "color": "red"}],'
+        ' "badge_hundreds_bands": "oops",'
+        ' "badge_integer_color": "white",'
+        ' "badge_display_mode": "bogus", "badge_water_unit": 0}',
+        encoding="utf-8",
     )
     broken = config_mod.Config()
     check(
-        "非法阈值组合（红 > 绿）被兜底为默认值",
-        broken.get("badge_green_at") == BADGE_GREEN_AT_DEFAULT
-        and broken.get("badge_red_below") == BADGE_RED_BELOW_DEFAULT,
-        f"期望默认值，实际 ({broken.get('badge_green_at')}, {broken.get('badge_red_below')})",
+        "非法配置被兜底为默认值",
+        broken.get("badge_bands") == BADGE_BANDS_DEFAULT
+        and broken.get("badge_hundreds_bands") == BADGE_HUNDREDS_BANDS_DEFAULT
+        and broken.get("badge_integer_color") == BADGE_INTEGER_COLOR_DEFAULT
+        and broken.get("badge_display_mode") == BADGE_DISPLAY_MODE_DEFAULT
+        and broken.get("badge_water_unit") == BADGE_WATER_UNIT_DEFAULT,
+        "色带、整数颜色、模式、单位都应回退默认",
     )
+
+    # 段数上限：十位级 10 段，百元级 20 段，超出部分被截断
+    many = [{"at": round(i / 10, 1), "color": "#123456"} for i in range(11)]
+    many_h = [{"at": float(i * 5), "color": "#123456"} for i in range(25)]
+    config_mod.CONFIG_PATH.write_text(
+        '{"badge_bands": %s, "badge_hundreds_bands": %s}'
+        % (config_mod.json.dumps(many), config_mod.json.dumps(many_h)),
+        encoding="utf-8",
+    )
+    capped = config_mod.Config()
+    check("十位级最多 10 段", len(capped.get("badge_bands")) == 10,
+          str(len(capped.get("badge_bands"))))
+    check("百元级最多 20 段", len(capped.get("badge_hundreds_bands")) == 20,
+          str(len(capped.get("badge_hundreds_bands"))))
+
+    # 旧配置迁移：旧阈值键应转换成 3 段色带
+    config_mod.CONFIG_PATH.write_text(
+        '{"badge_red_below": 0.3, "badge_green_at": 0.7,'
+        ' "badge_hundreds_red_below": 300, "badge_hundreds_green_at": 400}',
+        encoding="utf-8",
+    )
+    migrated = config_mod.Config()
+    check(
+        "旧版阈值配置自动迁移为色带",
+        [b["at"] for b in migrated.get("badge_bands")] == [0.0, 0.3, 0.7]
+        and [b["at"] for b in migrated.get("badge_hundreds_bands")] == [0.0, 300.0, 400.0],
+        str(migrated.get("badge_bands")),
+    )
+
     config_mod.CONFIG_PATH.unlink()
 
 
@@ -230,7 +369,7 @@ def test_badge_render() -> None:
     from src.icons import BADGE_RED, create_balance_badge_icon
 
     section("Test 2: 徽标图标渲染")
-    img = create_balance_badge_icon("20", BADGE_RED)
+    img = create_balance_badge_icon("20", BADGE_RED, 0.0)
     check("能创建徽标图片", img is not None)
 
     if not REAL_PIL:
@@ -252,6 +391,79 @@ def test_badge_render() -> None:
     check("数字为红色", has_red)
     check("画布尺寸与其它图标一致", rgba.size == (64, 64), str(rgba.size))
 
+    full = create_balance_badge_icon("20", BADGE_RED, 1.0).convert("RGBA")
+    half = create_balance_badge_icon("20", BADGE_RED, 0.5).convert("RGBA")
+    empty = create_balance_badge_icon("20", BADGE_RED, 0.0).convert("RGBA")
+
+    top_full = full.getpixel((32, 8))
+    top_empty = empty.getpixel((32, 8))
+    top_half = half.getpixel((32, 8))
+    bottom_half = half.getpixel((32, 56))
+
+    check(
+        "满水位时整个背景带淡蓝",
+        top_full[2] > top_empty[2],
+        f"full={top_full} empty={top_empty}",
+    )
+    check(
+        "半水位时上半仍为黑色",
+        top_half == top_empty,
+        f"half_top={top_half} empty={top_empty}",
+    )
+    check(
+        "半水位时下半已有水色",
+        bottom_half[2] > top_empty[2],
+        f"half_bottom={bottom_half}",
+    )
+
+    def _has(im, pred) -> bool:
+        raw = im.tobytes()
+        return any(
+            pred(raw[i], raw[i + 1], raw[i + 2], raw[i + 3])
+            for i in range(0, len(raw), 4)
+        )
+
+    def has_red(im) -> bool:
+        return _has(im, lambda r, g, b, a: a > 100 and r > 150 and g < 90 and b < 90)
+
+    def has_blue(im) -> bool:
+        return _has(im, lambda r, g, b, a: a > 200 and b > 40 and r < 40)
+
+    number_only = create_balance_badge_icon("20", BADGE_RED, 1.0, "number").convert("RGBA")
+    water_only = create_balance_badge_icon("20", BADGE_RED, 1.0, "water").convert("RGBA")
+
+    check(
+        "仅数字：有数字、无水位",
+        has_red(number_only) and not has_blue(number_only),
+    )
+    check(
+        "仅水位：有水位、无数字",
+        has_blue(water_only) and not has_red(water_only),
+    )
+    check(
+        "数字+水位：两者都在",
+        has_blue(full) and has_red(full),
+    )
+
+    outlined = create_balance_badge_icon(
+        "20", BADGE_RED, 1.0, "both", alert=True
+    ).convert("RGBA")
+    plain = create_balance_badge_icon(
+        "20", BADGE_RED, 1.0, "both", alert=False
+    ).convert("RGBA")
+    edge_out = outlined.getpixel((32, 6))
+    edge_plain = plain.getpixel((32, 6))
+    check(
+        "闪烁帧带红色描边",
+        edge_out[0] > 150 and edge_out[1] < 110,
+        f"edge={edge_out}",
+    )
+    check(
+        "非闪烁帧没有红色描边",
+        not (edge_plain[0] > 150 and edge_plain[1] < 110),
+        f"edge={edge_plain}",
+    )
+
 
 # ---------------------------------------------------------------------------
 # 测试 3：信号 -> 通知 + 闪烁
@@ -272,8 +484,8 @@ def test_signal_to_flash() -> None:
     signal_file.touch()
     check("信号被识别并删除", check_signal(cfg) is True and not signal_file.exists())
 
-    notified: list[bool] = []
-    appmod.notify_task_complete = lambda sound=True: notified.append(sound)
+    notified: list[tuple] = []
+    appmod.notify_task_complete = lambda sound=True, toast=True: notified.append((sound, toast))
 
     app = appmod.App()
     app._schedule_flash_tick = lambda: None      # 确定性：不启动真实定时器
@@ -282,7 +494,7 @@ def test_signal_to_flash() -> None:
 
     signal_file.touch()
     app._tick()
-    check("任务完成触发通知（含提示音）", notified == [True], str(notified))
+    check("任务完成触发通知（提示音 + 弹窗）", notified == [(True, True)], str(notified))
     check("任务完成开始闪烁", app._flashing is True)
 
     frames: list[bool] = []
@@ -293,6 +505,25 @@ def test_signal_to_flash() -> None:
     check("闪烁在 徽标/告警 之间交替", frames == [True, False, True, False], str(frames))
     app._cancel_flash()
     check("停止闪烁后恢复余额徽标", app.tray._current_img is app.tray._normal_img)
+
+    # 关闭闪烁：仍然通知，但不闪
+    no_flash = appmod.App()
+    no_flash.cfg.set("flash_enabled", False)
+    no_flash._schedule_flash_tick = lambda: None
+    no_flash._last_poll = 10 ** 12
+    signal_file.touch()
+    no_flash._tick()
+    check("关闭闪烁后不再闪烁", no_flash._flashing is False)
+
+    # 关闭弹窗：sound 仍为 True，toast 为 False
+    no_toast = appmod.App()
+    no_toast.cfg.set("task_toast_enabled", False)
+    no_toast.cfg.set("flash_enabled", False)
+    no_toast._schedule_flash_tick = lambda: None
+    no_toast._last_poll = 10 ** 12
+    signal_file.touch()
+    no_toast._tick()
+    check("关闭弹窗后 toast=False", notified[-1] == (True, False), str(notified[-1]))
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +582,7 @@ def _bash_backend():
 
 
 def test_hook_installer() -> None:
-    section("Test 4: WSL hook 安装脚本")
+    section("Test 4: Codex 回合结束钩子安装")
 
     backend = _bash_backend()
     if backend is None:
@@ -362,59 +593,99 @@ def test_hook_installer() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="vb_hook_"))
     fake_home = tmp / "home"
     fake_home.mkdir(parents=True, exist_ok=True)
+    fake_codex = tmp / "codex"
+    fake_codex.mkdir(parents=True, exist_ok=True)
     signal_dir = tmp / "signal"
     signal_dir.mkdir(parents=True, exist_ok=True)
-    stale = fake_home / ".zshrc"
-    stale.write_text(
-        "# >>> VisualizeBalance Codex Hook >>>\nstale hook\n"
+
+    # 旧 shell hook，安装后应被清理
+    (fake_home / ".bashrc").write_text(
+        "export FOO=1\n"
+        "# >>> VisualizeBalance Codex Hook >>>\nold hook\n"
         "# <<< VisualizeBalance Codex Hook <<<\n",
         encoding="utf-8",
     )
+    # 已有表头，用来验证 notify 被插到第一个 [table] 之前
+    (fake_codex / "config.toml").write_text(
+        'model = "test"\n\n[tui]\nfoo = 1\n', encoding="utf-8"
+    )
 
     posix_home = to_posix(fake_home)
+    posix_codex = to_posix(fake_codex)
     posix_sig = to_posix(signal_dir)
     posix_script = to_posix(ROOT / "scripts" / "install_wsl_hook.sh")
-    if not (posix_home and posix_sig and posix_script):
+    if not (posix_home and posix_codex and posix_sig and posix_script):
         print("  [SKIP] 无法把路径传给 bash（项目不在 /mnt/c 或 /mnt/d 下？）")
         return
 
     q = shlex.quote
-    install_cmd = (
-        "HOME={home} VB_SHELL=bash VB_SIGNAL_DIR={sig} VB_PURGE_STALE=1 bash {script}"
-    ).format(home=q(posix_home), sig=q(posix_sig), script=q(posix_script))
-
-    proc = run(install_cmd)
+    cmd = "HOME={h} CODEX_HOME={c} VB_SIGNAL_DIR={s} bash {sc}".format(
+        h=q(posix_home), c=q(posix_codex), s=q(posix_sig), sc=q(posix_script)
+    )
+    proc = run(cmd)
     if proc.returncode != 0:
         print("  ---- 安装脚本输出 ----")
         print((proc.stdout or "") + (proc.stderr or ""))
-    check("安装脚本正常退出", proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:120])
+    check("安装脚本正常退出", proc.returncode == 0,
+          (proc.stderr or proc.stdout).strip()[:120])
 
-    bashrc = fake_home / ".bashrc"
-    bashrc_text = bashrc.read_text(encoding="utf-8") if bashrc.exists() else ""
-    check("hook 写入登录 shell 对应的 .bashrc", "VisualizeBalance Codex Hook" in bashrc_text)
-    check("陈旧 .zshrc hook 被清理", "VisualizeBalance Codex Hook" not in stale.read_text(encoding="utf-8"))
-    check("脚本内含 DEBUG 守卫", "_vb_*) return" in bashrc_text)
+    notify = fake_home / ".visualize_balance" / "codex_notify.sh"
+    check("通知脚本已安装", notify.is_file())
 
-    if not bashrc_text:
-        print("  [SKIP] .bashrc 未生成，跳过 hook 实跑")
-        return
-
-    posix_bashrc = to_posix(bashrc)
-    if not posix_bashrc:
-        print("  [SKIP] 无法翻译 .bashrc 路径，跳过 hook 实跑")
-        return
-
-    hook_cmd = (
-        "set -eu; "
-        "source <(sed -n '/VisualizeBalance Codex Hook >>>/,/VisualizeBalance Codex Hook <<</p' {rc}); "
-        '_vb_last_cmd="codex"; _vb_precmd_hook; ls {sig}'
-    ).format(rc=q(posix_bashrc), sig=q(posix_sig))
-
-    proc2 = run(hook_cmd)
+    cfg_text = (fake_codex / "config.toml").read_text(encoding="utf-8")
+    expected_path = posix_home.rstrip("/") + "/.visualize_balance/codex_notify.sh"
     check(
-        "bash hook 能生成信号文件",
-        "codex_complete.signal" in proc2.stdout,
-        (proc2.stdout + proc2.stderr).strip()[:120],
+        'config.toml 写入 notify = ["bash", ...]',
+        'notify = ["bash"' in cfg_text and expected_path in cfg_text,
+        cfg_text.replace("\n", " | ")[:160],
+    )
+    check(
+        "notify 位于第一个 [table] 之前",
+        "notify =" in cfg_text and cfg_text.index("notify =") < cfg_text.index("[tui]"),
+    )
+    check(
+        "旧 shell hook 已清理",
+        "VisualizeBalance Codex Hook"
+        not in (fake_home / ".bashrc").read_text(encoding="utf-8"),
+    )
+
+    posix_notify = to_posix(notify)
+    if not posix_notify:
+        print("  [SKIP] 无法翻译通知脚本路径，跳过实跑")
+        return
+
+    signal_file = signal_dir / "codex_complete.signal"
+
+    def fire(payload: str):
+        return run(
+            "HOME={h} VB_SIGNAL_DIR={s} bash {n} {p}".format(
+                h=q(posix_home), s=q(posix_sig), n=q(posix_notify), p=q(payload)
+            )
+        )
+
+    early = '{"type":"agent-turn-complete","turn-id":"t0","last-assistant-message":""}'
+    fire(early)
+    check("只有回合完成事件、但还没输出时，不通知", not signal_file.exists())
+
+    other = '{"type":"session-start","turn-id":"t1"}'
+    fire(other)
+    check("非回合完成事件不通知", not signal_file.exists())
+
+    done = (
+        '{"type":"agent-turn-complete","turn-id":"t1","cwd":"/x",'
+        '"input-messages":["hi"],"last-assistant-message":"hello"}'
+    )
+    fire(done)
+    check("回合完成且有助手输出时才写信号", signal_file.exists())
+
+    if signal_file.exists():
+        signal_file.unlink()
+    fire(done)
+    check("同一 turn-id 只通知一次", not signal_file.exists())
+
+    check(
+        "调用记录写入 notify.log",
+        (fake_home / ".visualize_balance" / "notify.log").is_file(),
     )
 
 

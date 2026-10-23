@@ -8,9 +8,9 @@ from PIL import Image
 
 from .icons import (
     balance_badge_spec,
-    create_alert_icon,
     create_balance_badge_icon,
     create_no_key_icon,
+    quantize_water_level,
 )
 
 if TYPE_CHECKING:
@@ -25,13 +25,16 @@ class TrayManager:
     def __init__(self, app: "App"):
         self.app = app
         self.icon: pystray.Icon | None = None
-        self._alert_img: Image.Image = create_alert_icon()
         self._no_key_img: Image.Image = create_no_key_icon()
 
-        # 正常状态 = 黑底余额徽标；缓存 (文字, 颜色) 避免重复生成图片
+        # 正常 = 徽标；告警/闪烁 = 同一枚徽标加红色描边
+        # 缓存 (文字, 颜色, 水位, 模式) 避免重复生成图片
         self._badge_key: tuple[str, tuple] | None = None
         self._normal_img: Image.Image = create_balance_badge_icon(
             *balance_badge_spec(None)
+        )
+        self._alert_img: Image.Image = create_balance_badge_icon(
+            *balance_badge_spec(None), alert=True
         )
         self._current_img: Image.Image = self._normal_img
 
@@ -56,14 +59,22 @@ class TrayManager:
         闪烁进行中不抢图标，交由闪烁逻辑控制。
         """
         cfg = self.app.cfg
-        key = balance_badge_spec(
+        text, color, level = balance_badge_spec(
             balance,
-            green_at=cfg.get("badge_green_at", 0.50),
-            red_below=cfg.get("badge_red_below", 0.25),
+            bands=cfg.get("badge_bands"),
+            hundreds_bands=cfg.get("badge_hundreds_bands"),
+            integer_color=cfg.get("badge_integer_color", "#FFFFFF"),
+            water_unit=cfg.get("badge_water_unit", 1),
         )
+        mode = cfg.get("badge_display_mode", "both")
+        level = quantize_water_level(level)
+        key = (text, color, level, mode)
         if key != self._badge_key:
             self._badge_key = key
-            self._normal_img = create_balance_badge_icon(*key)
+            self._normal_img = create_balance_badge_icon(text, color, level, mode)
+            self._alert_img = create_balance_badge_icon(
+                text, color, level, mode, alert=True
+            )
         if apply and not getattr(self.app, "_flashing", False):
             self._update(self._normal_img)
 

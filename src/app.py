@@ -106,8 +106,12 @@ class App:
         # 信号检查
         if check_signal(self.cfg):
             log.info("任务完成通知触发")
-            notify_task_complete(sound=self._sound_enabled)
-            self._start_flash()
+            notify_task_complete(
+                sound=self._sound_enabled,
+                toast=self.cfg.get("task_toast_enabled", True),
+            )
+            if self.cfg.get("flash_enabled", True):
+                self._start_flash()
 
         # 余额检查（按间隔）
         if not hasattr(self, "_last_poll"):
@@ -149,7 +153,8 @@ class App:
                 self._low_alerted = True
                 log.warning("余额不足！当前 ¥%.2f < 阈值 ¥%.2f", balance, threshold)
                 notify_balance_low(balance, sound=self._sound_enabled)
-                self._start_flash()
+                if self.cfg.get("flash_enabled", True):
+                    self._start_flash()
         else:
             self._low_alerted = False
             if not self._flashing:
@@ -171,7 +176,7 @@ class App:
     # ==================================================================
 
     def _start_flash(self) -> None:
-        max_ticks = self.cfg.flash_timeout // self.cfg.flash_interval
+        max_ticks = max(0, int(self.cfg.flash_timeout)) // self._flash_interval_ms()
         with self._flash_lock:
             if self._flashing:
                 self._flash_counter = 0
@@ -198,10 +203,17 @@ class App:
 
     def _schedule_flash_tick(self) -> None:
         self._flash_timer = threading.Timer(
-            self.cfg.flash_interval / 1000.0, self._flash_tick
+            self._flash_interval_ms() / 1000.0, self._flash_tick
         )
         self._flash_timer.daemon = True
         self._flash_timer.start()
+
+    def _flash_interval_ms(self) -> int:
+        """闪烁间隔（毫秒），至少 50ms，避免配置为 0 时除零/忙等。"""
+        try:
+            return max(50, int(self.cfg.get("flash_interval", 500)))
+        except (TypeError, ValueError):
+            return 500
 
     def _flash_tick(self) -> None:
         with self._flash_lock:

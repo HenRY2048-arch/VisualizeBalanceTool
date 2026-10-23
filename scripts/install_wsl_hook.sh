@@ -1,23 +1,20 @@
 #!/bin/bash
 # ============================================================
-# 安装 WSL2 Codex 任务完成 Hook
+# 安装 VisualizeBalance 的 Codex 回合结束钩子（WSL2 侧）
 #
-# 目标 shell 判定顺序（永久策略，不再只看 .zshrc 是否存在）：
-#   1. 环境变量 VB_SHELL（bash / zsh）—— 便于脚本化与测试
-#   2. 登录 shell（getent passwd → $SHELL），且该 shell 必须真实可用
-#   3. 兜底：优先 bash，其次 zsh，哪个装了用哪个
-#   4. 都没有 → 打印手动安装说明并以非 0 退出
+# 方案：使用 Codex CLI 的 notify 配置，在**每次 AI 回合结束**时写信号文件。
+# 旧的 shell preexec/precmd 方案只有在退出 codex 进程（如 /exit）时才触发，
+# 已废弃：本脚本会自动把 ~/.bashrc / ~/.zshrc 里的旧 hook 清掉。
 #
 # 可选环境变量：
 #   VB_SIGNAL_DIR   自定义信号目录（默认自动探测 Windows 用户目录）
-#   VB_SHELL        强制指定 bash / zsh
-#   VB_PURGE_STALE  设为 1 时自动清理装在“非目标 shell”里的旧 hook
+#   CODEX_HOME      默认 ~/.codex
 # ============================================================
 
 set -eu
 
 echo "====================================="
-echo "  安装 WSL2 Codex 任务完成 Hook"
+echo "  安装 Codex 回合结束钩子"
 echo "====================================="
 echo ""
 
@@ -30,7 +27,7 @@ if [ -z "${VB_SIGNAL_DIR:-}" ]; then
         WIN_USER=$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' | tr -d '[:space:]' || true)
     fi
     case "$WIN_USER" in
-        ""|*[!A-Za-z0-9._-]*) WIN_USER="" ;;   # 探测失败或输出异常，忽略
+        ""|*[!A-Za-z0-9._-]*) WIN_USER="" ;;
     esac
 
     if [ -n "$WIN_USER" ] && [ -d "/mnt/c/Users/$WIN_USER" ]; then
@@ -41,7 +38,7 @@ if [ -z "${VB_SIGNAL_DIR:-}" ]; then
     else
         echo "✗ 无法定位 Windows 用户目录。"
         echo "  请用 VB_SIGNAL_DIR 显式指定，例如："
-        echo "    VB_SIGNAL_DIR=/mnt/c/Users/<你的Windows用户名>/.visualize_balance/signal bash scripts/install_wsl_hook.sh"
+        echo "    VB_SIGNAL_DIR=/mnt/c/Users/<Windows用户名>/.visualize_balance/signal bash scripts/install_wsl_hook.sh"
         exit 1
     fi
 else
@@ -49,179 +46,100 @@ else
 fi
 
 echo "信号目录: $SIGNAL_DIR"
-echo ""
-
 mkdir -p "$SIGNAL_DIR" 2>/dev/null || true
 if [ ! -d "$SIGNAL_DIR" ]; then
-    echo "✗ 信号目录不可创建/不可写: $SIGNAL_DIR"
+    echo "✗ 信号目录不可创建: $SIGNAL_DIR"
     exit 1
 fi
 
 # ------------------------------------------------------------------
-# 2. 选择目标 shell
+# 2. 安装 notify 脚本到固定位置
 # ------------------------------------------------------------------
-detect_login_shell() {
-    local login=""
-    if command -v getent >/dev/null 2>&1; then
-        login=$(getent passwd "${USER:-$(id -un)}" 2>/dev/null | cut -d: -f7 || true)
-    fi
-    [ -z "$login" ] && login="${SHELL:-}"
-    basename "${login:-}"
-}
+SRC_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex_notify.sh"
+if [ ! -f "$SRC_SCRIPT" ]; then
+    echo "✗ 找不到 $SRC_SCRIPT"
+    exit 1
+fi
 
-choose_shell() {
-    local forced="${VB_SHELL:-}"
-    local login
-    login=$(detect_login_shell)
+INSTALL_DIR="$HOME/.visualize_balance"
+NOTIFY_SCRIPT="$INSTALL_DIR/codex_notify.sh"
+mkdir -p "$INSTALL_DIR"
 
-    # 1) 显式指定
-    if [ -n "$forced" ]; then
-        case "$forced" in
-            bash|zsh) echo "$forced"; return ;;
-            *) echo "✗ VB_SHELL 只支持 bash / zsh（收到: $forced）" >&2; echo ""; return ;;
-        esac
-    fi
+sed "s#__VB_SIGNAL_DIR__#$SIGNAL_DIR#" "$SRC_SCRIPT" > "$NOTIFY_SCRIPT"
+chmod 755 "$NOTIFY_SCRIPT"
+echo "通知脚本: $NOTIFY_SCRIPT"
 
-    # 2) 登录 shell 优先，但必须真实可用
-    case "$login" in
-        zsh)
-            if command -v zsh >/dev/null 2>&1; then echo "zsh"; return; fi
-            echo "⚠ 登录 shell 是 zsh，但 zsh 未安装/不在 PATH，回退到 bash" >&2
+# 自检可写性。用临时文件名，避免在应用运行时误触发一次“任务完成”通知。
+SELFTEST="$SIGNAL_DIR/.vb_selftest"
+if : > "$SELFTEST" 2>/dev/null; then
+    rm -f "$SELFTEST"
+    echo "✅ 信号目录可写"
+else
+    echo "⚠ 信号目录不可写，请检查 $SIGNAL_DIR"
+fi
+
+# ------------------------------------------------------------------
+# 3. 写入 Codex 的 notify 配置
+# ------------------------------------------------------------------
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+CONFIG="$CODEX_HOME_DIR/config.toml"
+NOTIFY_LINE="notify = [\"bash\", \"$NOTIFY_SCRIPT\"]"
+
+mkdir -p "$CODEX_HOME_DIR"
+[ -f "$CONFIG" ] || : > "$CONFIG"
+
+echo "Codex 配置: $CONFIG"
+
+if grep -qE '^[[:space:]]*notify[[:space:]]*=' "$CONFIG"; then
+    EXISTING=$(grep -E '^[[:space:]]*notify[[:space:]]*=' "$CONFIG" | head -1)
+    case "$EXISTING" in
+        *"$NOTIFY_SCRIPT"*)
+            echo "✅ notify 已指向本脚本，无需修改"
             ;;
-        bash)
-            if command -v bash >/dev/null 2>&1; then echo "bash"; return; fi
+        *)
+            echo "⚠ config.toml 里已经有别的 notify 配置，未覆盖："
+            echo "    $EXISTING"
+            echo "  如需改用本脚本，请手动改成："
+            echo "    $NOTIFY_LINE"
             ;;
     esac
-
-    # 3) 兜底：优先 bash
-    if command -v bash >/dev/null 2>&1; then echo "bash"; return; fi
-    if command -v zsh  >/dev/null 2>&1; then echo "zsh";  return; fi
-
-    echo ""
-}
-
-SHELL_TYPE=$(choose_shell)
-if [ -z "$SHELL_TYPE" ]; then
-    echo "✗ 未找到可用的 bash 或 zsh，无法自动安装 hook。"
-    echo "  请手动把下面的片段加入你的 shell 配置文件："
-    echo ""
-    echo '  _vb_last_cmd=""'
-    echo '  _vb_capture_cmd() { case "$BASH_COMMAND" in _vb_*) return ;; esac; _vb_last_cmd="$BASH_COMMAND"; }'
-    echo "  trap _vb_capture_cmd DEBUG"
-    echo '  _vb_precmd_hook() {'
-    echo '      if [[ "$_vb_last_cmd" == codex* || "$_vb_last_cmd" == "cx "* ]]; then'
-    echo "          mkdir -p \"$SIGNAL_DIR\" 2>/dev/null"
-    echo "          touch \"$SIGNAL_DIR/codex_complete.signal\" 2>/dev/null"
-    echo '      fi'
-    echo '      _vb_last_cmd=""'
-    echo '  }'
-    echo '  PROMPT_COMMAND="_vb_precmd_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"'
-    echo ""
-    exit 1
+else
+    cp "$CONFIG" "$CONFIG.vb_bak" 2>/dev/null || true
+    # 顶层键必须写在第一个 [table] 之前，否则会被解析进某个表里
+    awk -v line="$NOTIFY_LINE" '
+        BEGIN { done = 0 }
+        !done && /^[[:space:]]*\[/ { print line; done = 1 }
+        { print }
+        END { if (!done) print line }
+    ' "$CONFIG" > "$CONFIG.vb_tmp" && mv "$CONFIG.vb_tmp" "$CONFIG"
+    echo "✅ 已写入: $NOTIFY_LINE"
+    echo "   （原配置备份: $CONFIG.vb_bak）"
 fi
 
-case "$SHELL_TYPE" in
-    zsh)  RC_FILE="$HOME/.zshrc"  ;;
-    bash) RC_FILE="$HOME/.bashrc" ;;
-esac
-if [ "$SHELL_TYPE" = "zsh" ]; then OTHER_RC="$HOME/.bashrc"; else OTHER_RC="$HOME/.zshrc"; fi
-
-echo "登录 shell: $(detect_login_shell)"
-echo "目标 shell: $SHELL_TYPE"
-echo "目标配置文件: $RC_FILE"
-echo ""
-
 # ------------------------------------------------------------------
-# 3. 清理装在非目标 shell 里的旧 hook（可选）
+# 4. 清理旧 shell hook（只在退出 codex 时触发，已废弃）
 # ------------------------------------------------------------------
-purge_hook_block() {
+remove_legacy_hook() {
     local file="$1"
     [ -f "$file" ] || return 0
     grep -q "VisualizeBalance Codex Hook" "$file" 2>/dev/null || return 0
+    cp "$file" "$file.vb_bak" 2>/dev/null || true
     awk '
         /# >>> VisualizeBalance Codex Hook >>>/ { skip = 1 }
         skip == 0 { print }
         /# <<< VisualizeBalance Codex Hook <<</ { skip = 0 }
     ' "$file" > "$file.vb_tmp" && mv "$file.vb_tmp" "$file"
+    echo "🧹 已移除旧 shell hook: $file（备份: $file.vb_bak）"
 }
 
-if grep -q "VisualizeBalance Codex Hook" "$OTHER_RC" 2>/dev/null; then
-    if [ "${VB_PURGE_STALE:-0}" = "1" ]; then
-        purge_hook_block "$OTHER_RC"
-        echo "✅ 已清理非目标 shell 中的旧 hook: $OTHER_RC"
-    else
-        echo "⚠ $OTHER_RC 里也有一份旧 hook，但当前目标 shell 是 $SHELL_TYPE。"
-        echo "  那份 hook 永远不会执行，建议清理："
-        echo "    VB_PURGE_STALE=1 bash $0"
-    fi
-    echo ""
-fi
+remove_legacy_hook "$HOME/.bashrc"
+remove_legacy_hook "$HOME/.zshrc"
 
-# ------------------------------------------------------------------
-# 4. 安装（幂等）
-# ------------------------------------------------------------------
-if grep -q "VisualizeBalance Codex Hook" "$RC_FILE" 2>/dev/null; then
-    echo "✅ $RC_FILE 中已存在 hook，跳过安装"
-    echo ""
-    echo "如需重装，请先删除 $RC_FILE 里"
-    echo "'# >>> VisualizeBalance Codex Hook >>>' 与"
-    echo "'# <<< VisualizeBalance Codex Hook <<<' 之间的内容。"
-    exit 0
-fi
-
-if [ "$SHELL_TYPE" = "zsh" ]; then
-    HOOK_CONTENT='
-# >>> VisualizeBalance Codex Hook >>>
-# Codex CLI 任务结束时，向 Windows 侧写入通知信号
-_vb_codex_done=false
-_vb_preexec() {
-    [[ "$1" == codex* || "$1" == "cx "* ]] && _vb_codex_done=true
-}
-_vb_precmd() {
-    if $_vb_codex_done; then
-        _vb_codex_done=false
-        local signal_dir="'"$SIGNAL_DIR"'"
-        mkdir -p "$signal_dir" 2>/dev/null
-        touch "$signal_dir/codex_complete.signal" 2>/dev/null
-    fi
-}
-autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook preexec _vb_preexec 2>/dev/null && add-zsh-hook precmd _vb_precmd 2>/dev/null
-# <<< VisualizeBalance Codex Hook <<<
-'
-else
-    HOOK_CONTENT='
-# >>> VisualizeBalance Codex Hook >>>
-# Codex CLI 任务结束时，向 Windows 侧写入通知信号
-_vb_last_cmd=""
-_vb_capture_cmd() {
-    # 守卫：跳过本 hook 自己的命令。否则 DEBUG trap 会在 _vb_precmd_hook 被
-    # 调用的瞬间把 _vb_last_cmd 覆盖成 "_vb_precmd_hook"，永远匹配不到 codex。
-    case "$BASH_COMMAND" in _vb_*) return ;; esac
-    _vb_last_cmd="$BASH_COMMAND"
-}
-trap _vb_capture_cmd DEBUG
-_vb_precmd_hook() {
-    if [[ "$_vb_last_cmd" == codex* || "$_vb_last_cmd" == "cx "* ]]; then
-        local signal_dir="'"$SIGNAL_DIR"'"
-        mkdir -p "$signal_dir" 2>/dev/null
-        touch "$signal_dir/codex_complete.signal" 2>/dev/null
-    fi
-    _vb_last_cmd=""
-}
-# 用 ${VAR:-} 兜底，避免在 `set -u` 的 shell 里因 PROMPT_COMMAND 未定义报错
-if [[ "${PROMPT_COMMAND:-}" != *"_vb_precmd_hook"* ]]; then
-    PROMPT_COMMAND="_vb_precmd_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-fi
-# <<< VisualizeBalance Codex Hook <<<
-'
-fi
-
-echo "$HOOK_CONTENT" >> "$RC_FILE"
-echo "✅ Hook 已安装到 $RC_FILE"
 echo ""
-echo "请执行以下命令使 hook 生效："
-echo "  source $RC_FILE"
+echo "完成。用法："
+echo "  - 不需要重开终端；下次启动 codex 时会读取 notify 配置"
+echo "  - 让 Codex 回答任意一句话（不用 /exit），Windows 托盘应立刻闪动 + 响铃"
 echo ""
-echo "验证：新开终端运行 codex，退出后应看到信号文件出现："
-echo "  ls -l \"$SIGNAL_DIR\""
-echo "（Windows 端应用读取后会自动删除该文件）"
+echo "自检："
+echo "  grep '^notify' \"$CONFIG\""
+echo "  ls -l \"$SIGNAL_DIR\"     # 应用读取后会自动删除信号文件"

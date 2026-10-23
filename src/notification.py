@@ -80,11 +80,12 @@ def send_toast(title: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def notify_task_complete(sound: bool = True) -> None:
-    """任务完成通知"""
+def notify_task_complete(sound: bool = True, toast: bool = True) -> None:
+    """任务完成通知（声音与 Toast 可分别开关）"""
     if sound:
         play_sound()
-    send_toast("Codex 任务完成", "你的 AI 任务已完成，请查看结果。")
+    if toast:
+        send_toast("Codex 任务完成", "你的 AI 任务已完成，请查看结果。")
 
 
 def notify_balance_low(balance: float, sound: bool = True) -> None:
