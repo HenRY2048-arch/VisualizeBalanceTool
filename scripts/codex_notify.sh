@@ -50,15 +50,33 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 # ------------------------------------------------------------------
-# 1. 只接受 agent-turn-complete
+# 1. 只接受回合完成事件（兼容旧版 agent-turn-complete 与新版 turn-complete）
 # ------------------------------------------------------------------
 case "$PAYLOAD" in
     *agent-turn-complete*) ;;
+    *'"type":"turn-complete"'*) ;;
+    *'"type": "turn-complete"'*) ;;
     *) exit 0 ;;
 esac
 
 # ------------------------------------------------------------------
-# 2. 必须有非空的助手输出，否则说明回合才刚开始
+# 2. 内部回合（线程标题生成 / 会话摘要）不算用户任务完成
+#
+# 实测 Codex 会在用户消息前后额外触发：
+#   - "Generate a concise, single-line task title ..."  标题生成
+#   - "Write a brief catch-up for a user ..."           会话摘要
+# 这些回合的 last-assistant-message 非空、turn-id 也各不相同，仅靠
+# “消息非空”无法过滤，必须按内部提示词特征跳过。
+# ------------------------------------------------------------------
+case "$PAYLOAD" in
+    *"single-line task title"*|*"catch-up for a user"*|*"Return JSON with summary"*)
+        printf '%s\n' "skip: internal turn (title/recap)" >> "$LOG_FILE" 2>/dev/null
+        exit 0
+        ;;
+esac
+
+# ------------------------------------------------------------------
+# 3. 必须有非空的助手输出，否则说明回合才刚开始
 # ------------------------------------------------------------------
 case "$PAYLOAD" in
     *'"last-assistant-message": ""'*|*'"last-assistant-message":""'*)
@@ -74,7 +92,8 @@ printf '%s' "$PAYLOAD" | grep -q '"last-assistant-message"' || {
 # ------------------------------------------------------------------
 # 3. 同一个 turn-id 只通知一次
 # ------------------------------------------------------------------
-TURN_ID=$(printf '%s' "$PAYLOAD" | sed -n 's/.*"turn-id":"\([^"]*\)".*/\1/p')
+TURN_ID=$(printf '%s' "$PAYLOAD" \
+    | sed -n 's/.*"turn-id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 if [ -n "$TURN_ID" ]; then
     LAST_FILE="$STATE_DIR/.last_turn_id"
     if [ -f "$LAST_FILE" ] && [ "$(cat "$LAST_FILE" 2>/dev/null)" = "$TURN_ID" ]; then

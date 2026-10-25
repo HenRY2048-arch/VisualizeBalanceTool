@@ -10,6 +10,7 @@ from .icons import (
     balance_badge_spec,
     create_balance_badge_icon,
     create_no_key_icon,
+    hex_to_rgb,
     quantize_water_level,
 )
 
@@ -31,10 +32,10 @@ class TrayManager:
         # 缓存 (文字, 颜色, 水位, 模式) 避免重复生成图片
         self._badge_key: tuple[str, tuple] | None = None
         self._normal_img: Image.Image = create_balance_badge_icon(
-            *balance_badge_spec(None)
+            *balance_badge_spec(None), **self._appearance()
         )
         self._alert_img: Image.Image = create_balance_badge_icon(
-            *balance_badge_spec(None), alert=True
+            *balance_badge_spec(None), alert=True, **self._appearance()
         )
         self._current_img: Image.Image = self._normal_img
 
@@ -68,15 +69,36 @@ class TrayManager:
         )
         mode = cfg.get("badge_display_mode", "both")
         level = quantize_water_level(level)
-        key = (text, color, level, mode)
+
+        appearance = (
+            str(cfg.get("badge_water_color", "#00BFFF")).upper(),
+            int(cfg.get("badge_water_alpha", 72)),
+            int(cfg.get("badge_text_alpha", 255)),
+            str(cfg.get("badge_flash_color", "#FF3B30")).upper(),
+            int(cfg.get("badge_flash_width", 8)),
+        )
+        key = (text, color, level, mode) + appearance
         if key != self._badge_key:
             self._badge_key = key
-            self._normal_img = create_balance_badge_icon(text, color, level, mode)
+            kwargs = self._appearance()
+            self._normal_img = create_balance_badge_icon(
+                text, color, level, mode, **kwargs
+            )
             self._alert_img = create_balance_badge_icon(
-                text, color, level, mode, alert=True
+                text, color, level, mode, alert=True, **kwargs
             )
         if apply and not getattr(self.app, "_flashing", False):
             self._update(self._normal_img)
+
+    def _appearance(self) -> dict:
+        cfg = self.app.cfg
+        return {
+            "water_color": hex_to_rgb(cfg.get("badge_water_color", "#00BFFF")),
+            "water_alpha": int(cfg.get("badge_water_alpha", 72)),
+            "text_alpha": int(cfg.get("badge_text_alpha", 255)),
+            "flash_color": hex_to_rgb(cfg.get("badge_flash_color", "#FF3B30")),
+            "flash_width": int(cfg.get("badge_flash_width", 8)),
+        }
 
     def _update(self, img: Image.Image) -> None:
         self._current_img = img

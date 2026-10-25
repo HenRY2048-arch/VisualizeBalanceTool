@@ -206,27 +206,25 @@ def test_badge_spec() -> None:
     GREEN = (124, 252, 0)
     WHITE = (255, 255, 255)
 
-    # 默认色带与旧版三段一致：0 红 / 0.25 橙 / 0.50 绿
+    # 默认色带：十位级 0/10/30（整数金额），百元级 0/320/360
     cases = [
-        (20.00, "20", WHITE, 1.00, "整数 20.00 -> 白 + 满水"),
-        (0.00, "0", WHITE, 1.00, "0.00 -> 白 + 满水"),
-        (10.20, "10", RED, 0.20, "10.20 -> 10-11 格内 20%"),
-        (9.80, "9", GREEN, 0.80, "9.80 -> 9-10 格内 80%"),
-        (9.00, "9", WHITE, 1.00, "9.00 -> 格线，满"),
-        (20.08, "20", RED, 0.08, "零头 0.08 < 0.25 -> 红"),
-        (20.25, "20", ORANGE, 0.25, "零头 = 0.25 -> 橙"),
-        (20.43, "20", ORANGE, 0.43, "零头 0.43 -> 橙"),
-        (20.50, "20", GREEN, 0.50, "零头 = 0.50 -> 绿"),
-        (20.56, "20", GREEN, 0.56, "零头 0.56 -> 绿"),
-        (99.99, "99", GREEN, 0.99, "99.99 -> 格内 99%"),
-        (8.96, "8", GREEN, 0.96, "一位数余额"),
+        (20.00, "20", ORANGE, 1.00, "20 -> 10~30 段，橙，满水"),
+        (0.00, "0", RED, 1.00, "0 -> 红"),
+        (9.80, "9", RED, 0.80, "9.80 -> 红，格内 80%"),
+        (10.00, "10", ORANGE, 1.00, "10 -> 橙，格线满"),
+        (10.20, "10", ORANGE, 0.20, "10.20 -> 10-11 格内 20%"),
+        (20.08, "20", ORANGE, 0.08, "20.08 -> 橙"),
+        (29.99, "29", ORANGE, 0.99, "29.99 -> 橙"),
+        (30.00, "30", GREEN, 1.00, "30 -> 绿"),
+        (99.99, "99", GREEN, 0.99, "99.99 -> 绿"),
+        (8.96, "8", RED, 0.96, "8.96 -> 红"),
         (None, "--", WHITE, 0.00, "无余额 -> --"),
-        (100.00, "1H", RED, 1.00, "100 -> 1H，<320 红，整数满水"),
+        (100.00, "1H", RED, 1.00, "100 -> 1H，<320 红"),
         (319.99, "3H", RED, 0.99, "319.99 -> 红"),
         (320.00, "3H", ORANGE, 1.00, "320（红阈值边界）-> 橙"),
         (359.99, "3H", ORANGE, 0.99, "359.99 -> 橙"),
         (360.00, "3H", GREEN, 1.00, "360（绿阈值边界）-> 绿"),
-        (379.00, "3H", GREEN, 1.00, "379 -> 3H，整数满水"),
+        (379.00, "3H", GREEN, 1.00, "379 -> 3H，满水"),
         (999.00, "9H", GREEN, 1.00, "999 -> 9H"),
         (1234.00, "9H", GREEN, 1.00, "超过 999 封顶 9H"),
     ]
@@ -257,31 +255,42 @@ def test_badge_spec() -> None:
         _, _, got_level = balance_badge_spec(value, water_unit=unit)
         check(label, abs(got_level - level) < 0.001, f"期望 {level} 实际 {got_level}")
 
-    # 十位级自定义 5 段
-    custom = [
-        (20.10, "#FF0000", "自定义 5 段：0.10 -> 第 1 段"),
-        (20.30, "#FF8000", "自定义 5 段：0.30 -> 第 2 段"),
-        (20.50, "#FFFF00", "自定义 5 段：0.50 -> 第 3 段"),
-        (20.70, "#00FF00", "自定义 5 段：0.70 -> 第 4 段"),
-        (20.90, "#00FFFF", "自定义 5 段：0.90 -> 第 5 段"),
-    ]
+    # 十位级自定义 5 段（整数金额）
     custom_bands = [
-        {"at": 0.0, "color": "#FF0000"},
-        {"at": 0.2, "color": "#FF8000"},
-        {"at": 0.4, "color": "#FFFF00"},
-        {"at": 0.6, "color": "#00FF00"},
-        {"at": 0.8, "color": "#00FFFF"},
+        {"at": 0, "color": "#FF0000"},
+        {"at": 10, "color": "#FF8000"},
+        {"at": 20, "color": "#FFFF00"},
+        {"at": 30, "color": "#00FF00"},
+        {"at": 40, "color": "#00FFFF"},
     ]
-    for value, color, label in custom:
+    for value, color, label in [
+        (5.00, "#FF0000", "十位级 5 段：5 -> 第 1 段"),
+        (15.00, "#FF8000", "十位级 5 段：15 -> 第 2 段"),
+        (25.00, "#FFFF00", "十位级 5 段：25 -> 第 3 段"),
+        (35.00, "#00FF00", "十位级 5 段：35 -> 第 4 段"),
+        (45.00, "#00FFFF", "十位级 5 段：45 -> 第 5 段"),
+    ]:
         _, got_color, _ = balance_badge_spec(value, bands=custom_bands)
         check(label, got_color == hex_to_rgb(color), f"期望 {color} 实际 {got_color}")
 
-    # 百元级自定义 4 段（5 元粒度示例）
+    # 自定义个位数阈值：3 元时设 2 为分界
+    single_bands = [
+        {"at": 0, "color": "#00FF00"},
+        {"at": 2, "color": "#FF0000"},
+    ]
+    for value, color, label in [
+        (1.50, "#00FF00", "个位数：1.50 < 2 -> 绿"),
+        (3.00, "#FF0000", "个位数：3.00 >= 2 -> 红"),
+    ]:
+        _, got_color, _ = balance_badge_spec(value, bands=single_bands)
+        check(label, got_color == hex_to_rgb(color), f"期望 {color} 实际 {got_color}")
+
+    # 百元级自定义 4 段
     hundred_bands = [
-        {"at": 0.0, "color": "#FF0000"},
-        {"at": 340.0, "color": "#FFA500"},
-        {"at": 360.0, "color": "#FFFF00"},
-        {"at": 380.0, "color": "#7CFC00"},
+        {"at": 0, "color": "#FF0000"},
+        {"at": 340, "color": "#FFA500"},
+        {"at": 360, "color": "#FFFF00"},
+        {"at": 380, "color": "#7CFC00"},
     ]
     for value, color, label in [
         (339.99, "#FF0000", "百元级 4 段：339.99 -> 第 1 段"),
@@ -291,10 +300,6 @@ def test_badge_spec() -> None:
     ]:
         _, got_color, _ = balance_badge_spec(value, hundreds_bands=hundred_bands)
         check(label, got_color == hex_to_rgb(color), f"期望 {color} 实际 {got_color}")
-
-    # 整数颜色可自定义
-    _, got_color, _ = balance_badge_spec(20.00, integer_color="#00FFAA")
-    check("整数余额颜色可自定义", got_color == (0, 255, 170), str(got_color))
 
     # 配置默认值必须与 icons 里的默认值一致
     from src import config as config_mod
@@ -331,8 +336,8 @@ def test_badge_spec() -> None:
     )
 
     # 段数上限：十位级 10 段，百元级 20 段，超出部分被截断
-    many = [{"at": round(i / 10, 1), "color": "#123456"} for i in range(11)]
-    many_h = [{"at": float(i * 5), "color": "#123456"} for i in range(25)]
+    many = [{"at": i, "color": "#123456"} for i in range(11)]
+    many_h = [{"at": i * 5, "color": "#123456"} for i in range(25)]
     config_mod.CONFIG_PATH.write_text(
         '{"badge_bands": %s, "badge_hundreds_bands": %s}'
         % (config_mod.json.dumps(many), config_mod.json.dumps(many_h)),
@@ -344,7 +349,7 @@ def test_badge_spec() -> None:
     check("百元级最多 20 段", len(capped.get("badge_hundreds_bands")) == 20,
           str(len(capped.get("badge_hundreds_bands"))))
 
-    # 旧配置迁移：旧阈值键应转换成 3 段色带
+    # 旧版百元级阈值键迁移；旧版十位级零头阈值与新整数模型不兼容，回退默认
     config_mod.CONFIG_PATH.write_text(
         '{"badge_red_below": 0.3, "badge_green_at": 0.7,'
         ' "badge_hundreds_red_below": 300, "badge_hundreds_green_at": 400}',
@@ -352,10 +357,10 @@ def test_badge_spec() -> None:
     )
     migrated = config_mod.Config()
     check(
-        "旧版阈值配置自动迁移为色带",
-        [b["at"] for b in migrated.get("badge_bands")] == [0.0, 0.3, 0.7]
-        and [b["at"] for b in migrated.get("badge_hundreds_bands")] == [0.0, 300.0, 400.0],
-        str(migrated.get("badge_bands")),
+        "旧版百元级阈值自动迁移，十位级使用新默认",
+        migrated.get("badge_bands") == BADGE_BANDS_DEFAULT
+        and [b["at"] for b in migrated.get("badge_hundreds_bands")] == [0, 300, 400],
+        str(migrated.get("badge_hundreds_bands")),
     )
 
     config_mod.CONFIG_PATH.unlink()
@@ -470,7 +475,7 @@ def test_badge_render() -> None:
 # ---------------------------------------------------------------------------
 
 def test_signal_to_flash() -> None:
-    section("Test 3: 信号文件 -> 通知 + 图标闪烁")
+    section("Test 3: 信号文件 -> 安静期 -> 通知 + 图标闪烁")
 
     import src.app as appmod
     from src.config import Config
@@ -487,14 +492,36 @@ def test_signal_to_flash() -> None:
     notified: list[tuple] = []
     appmod.notify_task_complete = lambda sound=True, toast=True: notified.append((sound, toast))
 
-    app = appmod.App()
-    app._schedule_flash_tick = lambda: None      # 确定性：不启动真实定时器
-    app._last_poll = 10 ** 12                    # 本 tick 跳过余额轮询
+    def make_app(**settings):
+        app = appmod.App()
+        app.cfg.set("notify_quiet_seconds", 10)
+        app.cfg.set("flash_enabled", True)
+        app.cfg.set("task_toast_enabled", True)
+        for key, value in settings.items():
+            app.cfg.set(key, value)
+        app._schedule_flash_tick = lambda: None   # 确定性：不启动真实定时器
+        app._last_poll = 10 ** 12                 # 本 tick 跳过余额轮询
+        return app
+
+    app = make_app()
     app.tray.set_balance(20.56)
 
+    # 1) 收到活动信号后先进入安静期，不立即通知
     signal_file.touch()
     app._tick()
-    check("任务完成触发通知（提示音 + 弹窗）", notified == [(True, True)], str(notified))
+    check("收到活动信号时不立即通知", notified == [], str(notified))
+    check("进入待确认状态", app._notify_pending is True)
+
+    # 2) 安静期内又来一条中间回复，继续等待
+    app._last_activity -= 5
+    signal_file.touch()
+    app._tick()
+    check("中间回复会重置安静期", notified == [], str(notified))
+
+    # 3) 安静期结束才通知
+    app._last_activity -= 11
+    app._tick()
+    check("安静期结束后才通知", notified == [(True, True)], str(notified))
     check("任务完成开始闪烁", app._flashing is True)
 
     frames: list[bool] = []
@@ -502,30 +529,120 @@ def test_signal_to_flash() -> None:
     app.tray._update = lambda img: (original_update(img), frames.append(img is app.tray._alert_img))
     for _ in range(4):
         app._flash_tick()
-    check("闪烁在 徽标/告警 之间交替", frames == [True, False, True, False], str(frames))
+    check("闪烁在 徽标/描边 之间交替", frames == [True, False, True, False], str(frames))
     app._cancel_flash()
     check("停止闪烁后恢复余额徽标", app.tray._current_img is app.tray._normal_img)
 
-    # 关闭闪烁：仍然通知，但不闪
-    no_flash = appmod.App()
-    no_flash.cfg.set("flash_enabled", False)
-    no_flash._schedule_flash_tick = lambda: None
-    no_flash._last_poll = 10 ** 12
+    # 4) 关闭闪烁：仍然通知，但不闪
+    no_flash = make_app(flash_enabled=False)
     signal_file.touch()
+    no_flash._tick()
+    no_flash._last_activity -= 11
     no_flash._tick()
     check("关闭闪烁后不再闪烁", no_flash._flashing is False)
 
-    # 关闭弹窗：sound 仍为 True，toast 为 False
-    no_toast = appmod.App()
-    no_toast.cfg.set("task_toast_enabled", False)
-    no_toast.cfg.set("flash_enabled", False)
-    no_toast._schedule_flash_tick = lambda: None
-    no_toast._last_poll = 10 ** 12
+    # 5) 关闭弹窗：sound 仍为 True，toast 为 False
+    no_toast = make_app(task_toast_enabled=False, flash_enabled=False)
     signal_file.touch()
+    no_toast._tick()
+    no_toast._last_activity -= 11
     no_toast._tick()
     check("关闭弹窗后 toast=False", notified[-1] == (True, False), str(notified[-1]))
 
+# ---------------------------------------------------------------------------
+# 测试 5：提供商解析
+# ---------------------------------------------------------------------------
 
+def test_providers() -> None:
+    section("Test 5: 提供商解析")
+
+    from src.providers import get_provider
+    from src.providers.custom import CustomProvider, _dig
+    from src.providers.moonshot import MoonshotProvider
+    from src.providers.openai import OpenAIProvider
+
+    moonshot = MoonshotProvider().parse_response({
+        "code": 0,
+        "status": True,
+        "data": {
+            "available_balance": 88.5,
+            "voucher_balance": 20.0,
+            "cash_balance": 68.5,
+        },
+    })
+    check(
+        "Moonshot 余额解析",
+        moonshot.ok and moonshot.balance == 88.5 and moonshot.granted == 20.0,
+        str(moonshot),
+    )
+
+    class _Cfg:
+        def __init__(self, **kw):
+            self._d = kw
+
+        def get(self, key, default=None):
+            return self._d.get(key, default)
+
+    custom = CustomProvider(_Cfg(
+        custom_api_url="https://example.com/balance",
+        custom_json_path="data.wallet.balance",
+        custom_currency="USD",
+    ))
+    parsed = custom.parse_response({"data": {"wallet": {"balance": "12.34"}}})
+    check(
+        "自定义提供商按字段路径解析",
+        parsed.ok and parsed.balance == 12.34 and parsed.currency == "USD",
+        str(parsed),
+    )
+    check(
+        "字段路径不存在时返回错误",
+        not CustomProvider(_Cfg(custom_json_path="data.nope"))
+        .parse_response({"data": {}}).ok,
+    )
+    check("_dig 支持嵌套路径", _dig({"a": {"b": {"c": 7}}}, "a.b.c") == 7)
+    check(
+        "未配置自定义地址时报错",
+        "custom_api_url" in (CustomProvider(_Cfg()).check("x").error or ""),
+    )
+
+    costs_payload = {
+        "object": "page",
+        "data": [
+            {"object": "bucket", "start_time": 0, "end_time": 86400,
+             "results": [{"object": "organization.costs.result",
+                          "amount": {"value": 0.06, "currency": "usd"}}]},
+            {"object": "bucket", "start_time": 86400, "end_time": 172800,
+             "results": [{"object": "organization.costs.result",
+                          "amount": {"value": 1.23, "currency": "usd"}}]},
+        ],
+        "has_more": False,
+        "next_page": None,
+    }
+    openai = OpenAIProvider(_Cfg(openai_initial_balance=100.0)).parse_response(costs_payload)
+    check(
+        "OpenAI 剩余 = 初始 - 已花（美元）",
+        openai.kind == "balance" and openai.currency == "USD"
+        and abs(openai.spent - 1.29) < 1e-9
+        and abs(openai.balance - 98.71) < 1e-9,
+        str(openai),
+    )
+    over = OpenAIProvider(_Cfg(openai_initial_balance=1.0)).parse_response(costs_payload)
+    check(
+        "花费超过初始余额时剩余为负",
+        abs(over.balance + 0.29) < 1e-9,
+        str(over),
+    )
+    from src.providers.openai import _parse_date
+    check("统计起始日期解析", _parse_date("2024-06-01") > 0 and _parse_date("") == 0)
+
+    try:
+        get_provider("not-exists")
+        check("未知提供商抛错", False)
+    except ValueError:
+        check("未知提供商抛错", True)
+
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 测试 4：WSL hook 安装脚本
 # ---------------------------------------------------------------------------
@@ -683,6 +800,28 @@ def test_hook_installer() -> None:
     fire(done)
     check("同一 turn-id 只通知一次", not signal_file.exists())
 
+    spaced = '{"type": "turn-complete", "turn-id": "t2", "last-assistant-message": "ok"}'
+    fire(spaced)
+    check("新版 turn-complete 事件也能识别", signal_file.exists())
+
+    if signal_file.exists():
+        signal_file.unlink()
+    title = (
+        '{"type":"agent-turn-complete","turn-id":"t3",'
+        '"input-messages":["Generate a concise, single-line task title of at most'
+        ' 36 characters..."],"last-assistant-message":"{\\"title\\":\\"x\\"}"}'
+    )
+    fire(title)
+    check("线程标题生成这类内部回合不通知", not signal_file.exists())
+
+    recap = (
+        '{"type":"agent-turn-complete","turn-id":"t4",'
+        '"input-messages":["Write a brief catch-up for a user returning to this'
+        ' task. Return JSON with summary..."],"last-assistant-message":"..."}'
+    )
+    fire(recap)
+    check("会话摘要这类内部回合不通知", not signal_file.exists())
+
     check(
         "调用记录写入 notify.log",
         (fake_home / ".visualize_balance" / "notify.log").is_file(),
@@ -707,6 +846,7 @@ def main() -> int:
     test_badge_spec()
     test_badge_render()
     test_signal_to_flash()
+    test_providers()
     test_hook_installer()
 
     failed = [name for name, ok, _ in _RESULTS if not ok]

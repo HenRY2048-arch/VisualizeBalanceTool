@@ -88,8 +88,8 @@ def notify_task_complete(sound: bool = True, toast: bool = True) -> None:
         send_toast("Codex 任务完成", "你的 AI 任务已完成，请查看结果。")
 
 
-def notify_balance_low(balance: float, sound: bool = True) -> None:
+def notify_balance_low(balance: float, sound: bool = True, symbol: str = "¥") -> None:
     """余额不足告警"""
     if sound:
         play_sound()
-    send_toast("余额不足告警", f"DeepSeek API 余额仅剩 ¥{balance:.2f}，请及时充值！")
+    send_toast("余额不足告警", f"当前余额仅剩 {symbol}{balance:.2f}，请及时充值！")

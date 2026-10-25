@@ -81,9 +81,9 @@ MAX_FRACTION_BANDS = 10
 MAX_HUNDREDS_BANDS = 20
 BADGE_INTEGER_COLOR_DEFAULT = "#FFFFFF"
 BADGE_BANDS_DEFAULT = [
-    {"at": 0.0, "color": "#FF0000"},
-    {"at": 0.25, "color": "#FFA500"},
-    {"at": 0.50, "color": "#7CFC00"},
+    {"at": 0, "color": "#FF0000"},
+    {"at": 10, "color": "#FFA500"},
+    {"at": 30, "color": "#7CFC00"},
 ]
 BADGE_HUNDREDS_BANDS_DEFAULT = [
     {"at": 0.0, "color": "#FF0000"},
@@ -139,11 +139,11 @@ def balance_badge_spec(
         - >=100  -> "xH"（379 -> "3H"），超过 999 封顶为 "9H"
 
     颜色：
-        - <100   -> 按零头 0.xx 落入 bands 的某一段；余额为整数时用 integer_color
-        - >=100  -> 按绝对金额落入 hundreds_bands 的某一段
+        - 余额本身落入 bands / hundreds_bands 的某一段，阈值是整数金额。
+        - <100 用 bands，>=100 用 hundreds_bands，两者都按绝对金额判定。
 
-    bands / hundreds_bands 形如 [{"at": 0.0, "color": "#FF0000"}, ...]，
-    最多 MAX_COLOR_BANDS 段，按 at 升序。
+    bands / hundreds_bands 形如 [{"at": 0, "color": "#FF0000"}, ...]，
+    段数上限由调用方控制，按 at 升序。
 
     水位（0~1，自下而上）= 当前格内的填充比例：
         余额每 water_unit 元为一格（默认 1 元）。格内从底面往上灌，
@@ -163,13 +163,8 @@ def balance_badge_spec(
         color = pick_band_color(value, hundreds_bands)
         return text, color, _water_level(value, unit)
 
-    integer = int(value)
-    text = str(integer)
-    frac = round(value - integer, 2)
-    if frac == 0.0:
-        color = hex_to_rgb(integer_color, BADGE_WHITE)
-    else:
-        color = pick_band_color(frac, bands)
+    text = str(int(value))
+    color = pick_band_color(value, bands)
     return text, color, _water_level(value, unit)
 
 
@@ -214,6 +209,11 @@ def create_balance_badge_icon(
     mode: str = BADGE_DISPLAY_MODE_DEFAULT,
     size: int = 64,
     alert: bool = False,
+    water_color: tuple = BADGE_WATER[:3],
+    water_alpha: int = BADGE_WATER[3],
+    text_alpha: int = 255,
+    flash_color: tuple = BADGE_ALERT_BORDER,
+    flash_width: int = 8,
 ) -> Image.Image:
     """
     黑底矩形框 + 淡蓝水位 + 指定颜色的余额数字。
@@ -250,15 +250,16 @@ def create_balance_badge_icon(
             water_top = box[3] - (box[3] - box[1]) * level
             mdraw.rectangle((0, 0, size - 1, int(water_top)), fill=0)
 
-        water = Image.new("RGBA", (size, size), BADGE_WATER)
-        water.putalpha(mask.point(lambda v: v * BADGE_WATER[3] // 255))
+        water_alpha = min(max(int(water_alpha), 0), 255)
+        water = Image.new("RGBA", (size, size), (*water_color[:3], water_alpha))
+        water.putalpha(mask.point(lambda v: v * water_alpha // 255))
         img.alpha_composite(water)
 
     # --- 红色描边：画在水位之上、数字之下，闪烁时更醒目 ---
     if alert:
-        border = max(2, size // 8)
+        border = max(1, int(flash_width * size / 64))
         draw.rounded_rectangle(
-            box, radius=radius, outline=BADGE_ALERT_BORDER, width=border
+            box, radius=radius, outline=flash_color, width=border
         )
 
     if draw_text:
@@ -274,7 +275,7 @@ def create_balance_badge_icon(
                 box[1] + (inner_h - th) / 2 - bbox[1],
             ),
             text,
-            fill=color,
+            fill=(*color[:3], min(max(int(text_alpha), 0), 255)),
             font=font,
         )
     return img

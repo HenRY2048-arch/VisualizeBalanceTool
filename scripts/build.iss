@@ -3,7 +3,7 @@
 
 [Setup]
 AppName=VisualizeBalance
-AppVersion=1.4.1
+AppVersion=1.7.0
 AppPublisher=VisualizeBalance
 DefaultDirName={pf}\VisualizeBalance
 DefaultGroupName=VisualizeBalance

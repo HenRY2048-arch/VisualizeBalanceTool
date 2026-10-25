@@ -17,6 +17,9 @@ class BalanceResult:
     balance: float | None = None
     is_available: bool | None = None
     currency: str = "CNY"
+    kind: str = "balance"  # balance / cost
+    initial: float = 0.0   # cost 模式：用户配置的初始余额
+    spent: float = 0.0     # cost 模式：统计区间内的累计花费
     granted: float = 0.0
     topped_up: float = 0.0
     error: str | None = None
@@ -37,6 +40,17 @@ class BaseProvider:
     api_url: str = ""
     env_key_name: str = ""
 
+    def __init__(self, cfg=None):
+        # 部分提供商（如自定义 HTTP）需要读取额外配置
+        self.cfg = cfg
+
+    def headers(self, api_key: str) -> dict[str, str]:
+        """默认使用 Bearer 认证，子类可覆盖。"""
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+
     # ------------------------------------------------------------------
     # 子类必须实现
     # ------------------------------------------------------------------
@@ -54,12 +68,8 @@ class BaseProvider:
         if not api_key:
             return BalanceResult(error=f"未配置 {self.env_key_name}")
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-        }
         try:
-            resp = requests.get(self.api_url, headers=headers, timeout=10)
+            resp = requests.get(self.api_url, headers=self.headers(api_key), timeout=10)
             log.info("[%s] HTTP %d | URL: %s", self.name, resp.status_code, self.api_url)
             log.debug("[%s] 响应: %s", self.name, resp.text[:500])
 

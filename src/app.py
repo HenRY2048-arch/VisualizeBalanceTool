@@ -38,6 +38,10 @@ class App:
         self._flash_counter: int = 0
         self._flash_lock = threading.Lock()
 
+        # 任务完成判定：收到活动信号后，等安静期结束再通知
+        self._notify_pending: bool = False
+        self._last_activity: float = 0.0
+
         # 停止事件
         self._stop_event = threading.Event()
 
@@ -50,7 +54,7 @@ class App:
 
     def _load_provider(self) -> None:
         try:
-            self.provider = get_provider(self.cfg.provider)
+            self.provider = get_provider(self.cfg.provider, self.cfg)
             log.info("已加载提供商: %s", self.provider.display_name)
         except ValueError as exc:
             log.error("提供商加载失败: %s", exc)
@@ -103,9 +107,16 @@ class App:
     def _tick(self) -> None:
         now = time.time()
 
-        # 信号检查
+        # 信号文件表示 Codex 刚结束一次助手输出，可能只是阶段性的中间回复
         if check_signal(self.cfg):
-            log.info("任务完成通知触发")
+            self._last_activity = now
+            self._notify_pending = True
+            log.info("收到 Codex 活动信号，等待安静期")
+
+        quiet = max(1, int(self.cfg.get("notify_quiet_seconds", 10)))
+        if self._notify_pending and now - self._last_activity >= quiet:
+            self._notify_pending = False
+            log.info("任务完成通知触发（已安静 %d 秒）", quiet)
             notify_task_complete(
                 sound=self._sound_enabled,
                 toast=self.cfg.get("task_toast_enabled", True),
@@ -136,23 +147,35 @@ class App:
         balance = result.balance
         assert balance is not None
 
+        is_usd = result.currency == "USD"
+        symbol = "$" if is_usd else "¥"
         status = "可用" if result.is_available else "不可用"
-        detail = f"赠送: ¥{result.granted:.2f}  充值: ¥{result.topped_up:.2f}"
-        self._update_title(f"余额: ¥{balance:.2f} ({status}) | {detail}")
+        label = "余额"
+        if is_usd:
+            detail = f"初始 ${result.initial:.2f} - 已花 ${result.spent:.2f}"
+        else:
+            detail = f"赠送: ¥{result.granted:.2f}  充值: ¥{result.topped_up:.2f}"
+        self._update_title(f"{label}: {symbol}{balance:.2f} ({status}) | {detail}")
         # 托盘图标显示为黑底余额数字（颜色随零头变化）
         self.tray.set_balance(balance)
-        log.info(
-            "余额: ¥%.2f  可用=%s  赠送=¥%.2f  充值=¥%.2f",
-            balance, result.is_available, result.granted, result.topped_up,
-        )
+        if is_usd:
+            log.info(
+                "余额: $%.4f = 初始 $%.2f - 已花 $%.4f",
+                balance, result.initial, result.spent,
+            )
+        else:
+            log.info(
+                "余额: ¥%.2f  可用=%s  赠送=¥%.2f  充值=¥%.2f",
+                balance, result.is_available, result.granted, result.topped_up,
+            )
 
         threshold = self.cfg.alert_threshold
         if balance < threshold:
             self.tray.set_alert()
             if not self._low_alerted:
                 self._low_alerted = True
-                log.warning("余额不足！当前 ¥%.2f < 阈值 ¥%.2f", balance, threshold)
-                notify_balance_low(balance, sound=self._sound_enabled)
+                log.warning("余额不足！当前 %s%.2f < 阈值 %s%.2f", symbol, balance, symbol, threshold)
+                notify_balance_low(balance, sound=self._sound_enabled, symbol=symbol)
                 if self.cfg.get("flash_enabled", True):
                     self._start_flash()
         else:

@@ -11,13 +11,13 @@ def register(cls: type[BaseProvider]) -> type[BaseProvider]:
     return cls
 
 
-def get_provider(name: str) -> BaseProvider:
+def get_provider(name: str, cfg=None) -> BaseProvider:
     """根据名称获取提供商实例"""
     cls = _PROVIDERS.get(name)
     if cls is None:
         available = ", ".join(_PROVIDERS) or "(无)"
         raise ValueError(f"未知提供商: {name!r}，可用: {available}")
-    return cls()
+    return cls(cfg)
 
 
 def available_providers() -> list[str]:
@@ -27,3 +27,5 @@ def available_providers() -> list[str]:
 # 触发各提供商模块的导入（注册）
 from . import deepseek  # noqa: F401
 from . import openai    # noqa: F401
+from . import moonshot  # noqa: F401
+from . import custom    # noqa: F401
